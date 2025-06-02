@@ -1,0 +1,17 @@
+# Compiled source
+*.o
+*.pyc
+*.deb
+
+# Logs
+*.log
+
+# Dependencies
+node_modules/
+vendor/
+
+# Environment variables
+.env
+
+# Executables
+hal_app
