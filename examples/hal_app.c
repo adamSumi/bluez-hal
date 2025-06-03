@@ -1,6 +1,9 @@
 #include <stdio.h>
 #include <glib.h>
+#include <signal.h>
 #include "ble_hal.h" // Assuming this path is correct based on your -Iinclude flag
+
+static GMainLoop *main_loop = NULL;
 
 // Simple global event callback for the sample app
 void sample_global_event_cb(BleHalEvent event_type, BleHalEventData* data, void* user_data) {
@@ -12,8 +15,14 @@ void sample_global_event_cb(BleHalEvent event_type, BleHalEventData* data, void*
     }
 }
 
+void sigint_handler(int signum) {
+    printf("\nSample App: SIGINT received, quitting...\n");
+    if (main_loop && g_main_loop_is_running(main_loop)) {
+        g_main_loop_quit(main_loop);
+    }
+}
+
 int main(int argc, char *argv[]) {
-    GMainLoop *main_loop = NULL;
     BleHalConfig hal_config;
     BleHalStatus status;
 
@@ -26,6 +35,9 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    // Set up signal handler for Ctrl+C
+    signal(SIGINT, sigint_handler);
+
     // Prepare HAL configuration
     hal_config.global_event_cb = sample_global_event_cb;
     hal_config.global_event_user_data = NULL; // No specific user data for this simple example
@@ -33,18 +45,13 @@ int main(int argc, char *argv[]) {
     // Initialize the BLE HAL
     // We pass NULL for the loop parameter to let the HAL create its own internal one for this test.
     // Or, you could pass 'main_loop' if you intend the HAL to use this app's loop directly.
-    status = ble_hal_init(&hal_config, NULL /* or pass main_loop */);
+    status = ble_hal_init(&hal_config, main_loop);
     if (status != BLE_HAL_SUCCESS) {
         fprintf(stderr, "HAL App: Failed to initialize BLE HAL, error: %d\n", status);
         g_main_loop_unref(main_loop);
         return 1;
     }
 
-    printf("HAL App: BLE HAL initialized. Running GMainLoop for 5 seconds (or press Ctrl+C)...\n");
-    // Run the main loop for a bit to allow D-Bus events (like BlueZ service appearing)
-    // In a real app, this would run until the application quits.
-    // Here, we use a timeout for a simple non-blocking test, or you can just run and Ctrl+C.
-    g_timeout_add_seconds(5, (GSourceFunc)g_main_loop_quit, main_loop); // Quit after 5 seconds
     g_main_loop_run(main_loop);
 
     printf("HAL App: GMainLoop finished. Deinitializing BLE HAL...\n");

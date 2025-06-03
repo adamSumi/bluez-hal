@@ -14,6 +14,25 @@ static gboolean active_adapter_found = FALSE;
 static BleHalConfig hal_global_config;          // Stored HAL configuration
 static gboolean hal_initialized = FALSE;        // HAL initialization state
 
+typedef struct {
+    BleHalResultCb app_callback;
+    void* app_user_data;
+} SetPowerAsyncData;
+
+void generic_result_cb(BleHalStatus error_code, void* user_data) {
+    const char* operation_description = (const char*)user_data; // Cast user_data to its expected type
+
+    if (operation_description == NULL) {
+        operation_description = "Unknown operation";
+    }
+
+    if (error_code == BLE_HAL_SUCCESS) {
+        printf("HAL_APP: Operation '%s' completed successfully.\n", operation_description);
+    } else {
+        fprintf(stderr, "HAL_APP: Operation '%s' failed with error code: %d\n", operation_description, error_code);
+    }
+}
+
 static void on_object_manager_signal(GDBusConnection *connection,
                                      const gchar *sender_name,
                                      const gchar *object_path,
@@ -125,8 +144,6 @@ static void on_bluez_appeared(GDBusConnection *connection, // This 'connection' 
     memset(&active_adapter, 0, sizeof(BleHalAdapterInfo));
     printf("HAL: Active adapter state reset.\n"); // Added a log for clarity
 
-    // Subscribe to ObjectManager signals
-    // Use the global dbus_conn which should be valid at this point
     if (dbus_conn) { // Ensure dbus_conn is not NULL
         object_manager_signal_watch_id = g_dbus_connection_signal_subscribe(
             dbus_conn,                                  // The D-Bus connection
@@ -233,6 +250,10 @@ static void process_adapter_interface(const gchar* object_path, GVariant* proper
         // If the adapter is not powered, the application might need to be notified,
         // or the HAL could attempt to power it on if that's desired functionality.
         // Example: ble_hal_power_on_adapter(active_adapter.path); (to be implemented)
+        if (active_adapter_found && !active_adapter.powered) {
+            printf("HAL App: Adapter %s is not powered on. Attempting to power on...\n", active_adapter.address);
+            ble_hal_set_adapter_power(active_adapter.path, TRUE, generic_result_cb, "SetPowerOn");
+        }
     } else {
         printf("HAL: Adapter at %s did not have an address, not using.\n", object_path);
     }
@@ -380,8 +401,6 @@ void ble_hal_deinit(void) {
         printf("HAL: Stopped watching BlueZ D-Bus service.\n");
     }
 
-    // Future: Unsubscribe from other D-Bus signals here.
-
     if (dbus_conn) {
         g_object_unref(dbus_conn); // Close D-Bus connection
         dbus_conn = NULL;
@@ -402,4 +421,76 @@ void ble_hal_deinit(void) {
 
     hal_initialized = FALSE;
     printf("HAL: Deinitialization complete.\n");
+}
+
+static void on_set_power_reply(GObject *source_object, GAsyncResult *res, gpointer user_data) {
+    SetPowerAsyncData *data = (SetPowerAsyncData *)user_data;
+    GError *error = NULL;
+    BleHalStatus hal_err = BLE_HAL_SUCCESS;
+
+    g_dbus_connection_call_finish(G_DBUS_CONNECTION(source_object), res, &error);
+
+    if (error) {
+        fprintf(stderr, "HAL Error: Failed to set 'Powered' property: %s (D-Bus error: %s)\n",
+                error->message, g_dbus_error_get_remote_error(error));
+        // TODO: Map GError to BleHalError more specifically if desired
+        // For example, check g_dbus_error_get_remote_error(error) for BlueZ specific errors.
+        hal_err = BLE_HAL_ERROR_DBUS;
+        g_error_free(error);
+    } else {
+        printf("HAL: 'Powered' property set successfully.\n");
+        // Note: The actual state change confirmation usually comes via a PropertiesChanged signal
+        // for the 'Powered' property on org.bluez.Adapter1. Listening to this signal
+        // would be the robust way to confirm the power state has indeed changed.
+    }
+
+    if (data->app_callback) {
+        data->app_callback(hal_err, data->app_user_data);
+    }
+    g_free(data);
+}
+
+BleHalStatus ble_hal_set_adapter_power(const char* adapter_path, gboolean power_on, BleHalResultCb cb, void* user_data) {
+    if (!hal_initialized || !dbus_conn) {
+        fprintf(stderr, "HAL Error: HAL not initialized or D-Bus connection lost.\n");
+        if (cb) cb(BLE_HAL_ERROR_NOT_INITIALIZED, user_data); // Call immediately with error
+        return BLE_HAL_ERROR_NOT_INITIALIZED;
+    }
+
+    if (!adapter_path) {
+        fprintf(stderr, "HAL Error: Adapter path cannot be NULL for set_adapter_power.\n");
+        if (cb) cb(BLE_HAL_ERROR_INVALID_PARAMS, user_data);
+        return BLE_HAL_ERROR_INVALID_PARAMS;
+    }
+
+    // The 'Powered' property expects a GVariant of type boolean ('b').
+    GVariant *value_variant = g_variant_new_boolean(power_on);
+
+    // The parameters for DBus.Properties.Set are:
+    // interface_name (s), property_name (s), value (v)
+    GVariant *params = g_variant_new("(ssv)",
+                                     "org.bluez.Adapter1", // Interface name
+                                     "Powered",            // Property name
+                                     value_variant);       // The new value (GVariant takes ownership of value_variant)
+
+    SetPowerAsyncData *async_data = g_new(SetPowerAsyncData, 1);
+    async_data->app_callback = cb;
+    async_data->app_user_data = user_data;
+
+    printf("HAL: Attempting to set 'Powered' property to %s for adapter %s\n", power_on ? "ON" : "OFF", adapter_path);
+
+    g_dbus_connection_call(dbus_conn,
+                           "org.bluez",                             // D-Bus service name
+                           adapter_path,                          // Object path of the adapter
+                           "org.freedesktop.DBus.Properties",       // Interface name for property operations
+                           "Set",                                   // Method name
+                           params,                                  // Parameters (GVariant owns its children)
+                           NULL,                                    // Reply type (Set has no specific reply value other than error)
+                           G_DBUS_CALL_FLAGS_NONE,
+                           -1,                                      // Timeout
+                           NULL,                                    // GCancellable
+                           on_set_power_reply,                      // Callback for the reply
+                           async_data);                             // User data for the callback
+
+    return BLE_HAL_PENDING; // Operation is asynchronous
 }

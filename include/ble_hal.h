@@ -43,6 +43,9 @@ typedef struct {
     // Other config options (e.g., log level)
 } BleHalConfig;
 
+
+typedef void (*BleHalResultCb)(BleHalStatus error, void* user_data);
+
 /**
  * @brief Initializes the BLE HAL.
  * Connects to D-Bus, monitors BlueZ service.
@@ -57,5 +60,16 @@ BleHalStatus ble_hal_init(const BleHalConfig* config, GMainLoop* loop);
  * Closes D-Bus connection and cleans up resources.
  */
 void ble_hal_deinit(void);
+
+/**
+ * @brief Sets the power state of the specified Bluetooth adapter.
+ *
+ * @param adapter_path The D-Bus object path of the adapter (e.g., "/org/bluez/hci0").
+ * @param power_on TRUE to power on, FALSE to power off.
+ * @param cb Callback function to be invoked with the result of the operation.
+ * @param user_data User data to be passed to the callback.
+ * @return BleHalStatus BLE_HAL_PENDING if the operation was initiated, or an error code.
+ */
+BleHalStatus ble_hal_set_adapter_power(const char* adapter_path, gboolean power_on, BleHalResultCb cb, void* user_data);
 
 #endif // BLE_HAL_H_
